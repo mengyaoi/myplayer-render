@@ -36,29 +36,35 @@ function audioErr() {
     // 没播放过，直接跳过
     if(rem.playlist === undefined) return true;
 
-    // === P2：播放失败先自动换源重试（netease→tencent→kugou），三源都失败才跳下一首 ===
+    // === P2：播放失败先自动换源重试（netease→tencent），两源都失败才跳下一首 ===
     // 背景：Render 部署下，仅用 netease 源时部分歌在网易云 CDN 返回 403/资源下架，
-    // 浏览器跟 302 后拿不到音频。同一 id 换 tencent/kugou 源往往有资源，可救回。
+    // 浏览器跟 302 后拿不到音频。同一 id 换 tencent 源往往有资源，可救回。
+    // 注：kugou 在 Meting 镜像层返回的 url 里 id=undefined（已本地验证），救不回，已剔除。
     var cur = musicList[1].item[rem.playid];
+    console.log('[audioErr] triggered. rem.playid=', rem.playid, 'cur=', cur && {id:cur.id, name:cur.name, source:cur.source, url:(cur.url||'').slice(0,60)});
     if(cur && cur.id) {
         // 已尝试的源顺序（netease 是默认，先试它之后的）
-        var SOURCES = ["netease", "tencent", "kugou"];
+        var SOURCES = ["netease", "tencent"];
         if(!rem._trySrc) rem._trySrc = {};                 // 记录每首歌试到哪个源
         var key = cur.id;
         if(rem._trySrc[key] === undefined) rem._trySrc[key] = "netease";  // 起始
         var idx = SOURCES.indexOf(rem._trySrc[key]);
         var nextSrc = SOURCES[idx + 1];
+        console.log('[audioErr] _trySrc[',key,']=', rem._trySrc[key], 'nextSrc=', nextSrc);
         if(nextSrc) {
             rem._trySrc[key] = nextSrc;
             cur.source = nextSrc;   // 换源
             cur.url = null;         // 强制重新取 url
-            cur.url_id = cur.id;
             layer.msg('当前源播放失败，尝试 ' + nextSrc + ' 源');
+            console.log('[audioErr] 换源请求发出: source=' + nextSrc + ' id=' + cur.id);
             ajaxUrl(cur, play);     // 用新源重新取并播放
             return true;
         }
-        // 三源都试完，清理标记
+        // 两源都试完，清理标记
         delete rem._trySrc[key];
+        console.log('[audioErr] 两源都试完, 走 nextMusic()');
+    } else {
+        console.warn('[audioErr] 拿不到当前歌, cur=', cur);
     }
     // === 换源逻辑结束，以下为原逻辑：连续失败过多才停 ===
 
@@ -207,8 +213,23 @@ function updateProgress(){
     if(rem.paused !== false) return true;
     // 同步进度条
 	music_bar.goto(rem.audio[0].currentTime / rem.audio[0].duration);
-    // 同步歌词显示	
+    // 同步歌词显示
 	scrollLyric(rem.audio[0].currentTime);
+
+    // === P2 兜底：网易云 403 时 audio 不报错也不更新进度，8 秒还是 0 就强制换源 ===
+    var a = rem.audio[0];
+    if(a.currentTime === 0 && a.readyState < 3) {
+        // 还在加载中（readyState < HAVE_FUTURE_DATA）
+        if(!rem._stallSince) rem._stallSince = Date.now();
+        if(Date.now() - rem._stallSince > 8000) {
+            console.warn('[updateProgress] 8秒还在loading且currentTime=0, 强制换源');
+            rem._stallSince = null;
+            audioErr();
+        }
+    } else {
+        // 有进度了，重置 stall 计时
+        rem._stallSince = null;
+    }
 }
 
 // 显示的列表中的某一项点击后的处理函数
@@ -309,6 +330,32 @@ function initAudio() {
     rem.audio[0].addEventListener('pause', audioPause);   // 暂停
     $(rem.audio[0]).on('ended', autoNextMusic);   // 播放结束
     rem.audio[0].addEventListener('error', audioErr);   // 播放器错误处理
+    // === P2 兜底：网易云 403 时 audio 可能不触发 error，而是卡在 stalled/waiting，再加 stalled + play Promise reject 兜底 ===
+    rem.audio[0].addEventListener('stalled', function(){
+        console.warn('[audio] stalled event fired -> 触发换源');
+        // 延迟 500ms 再触发，避免正常缓冲被误判
+        setTimeout(function(){
+            if(rem.audio && rem.audio[0] && rem.audio[0].paused && rem.audio[0].currentTime === 0) {
+                audioErr();
+            }
+        }, 800);
+    });
+    rem.audio[0].addEventListener('suspend', function(){
+        console.warn('[audio] suspend event fired (可能 403 资源被拒)');
+    });
+    // 监听 play() promise reject（src 不可用时不会触发 error，而是 promise reject）
+    var _origPlay = rem.audio[0].play.bind(rem.audio[0]);
+    rem.audio[0].play = function(){
+        var p = _origPlay();
+        if(p && typeof p.catch === 'function'){
+            p.catch(function(e){
+                console.warn('[audio] play() promise reject:', (e && e.name) || e);
+                // play() 失败通常是 src 不可用，触发换源
+                setTimeout(function(){ audioErr(); }, 300);
+            });
+        }
+        return p;
+    };
 }
 
 
@@ -354,12 +401,18 @@ function play(music) {
         audioErr(); // 调用错误处理函数
         return;
     }
-    
+
     rem.errCount = 0;   // 连续播放失败的歌曲数归零
-    // 播放成功，清理该歌的换源重试标记（避免下一首同 id 歌跳过 netease）
-    if(rem._trySrc && music.id !== undefined) {
-        delete rem._trySrc[music.id];
-    }
+    // 清理换源标记：等 audio 真能播（canplay）再清，避免换源后回失败又从头试的死循环
+    // 用一次性 canplay 监听，触发后自移除
+    var _okHandler = function(){
+        rem.audio[0].removeEventListener('canplay', _okHandler);
+        if(rem._trySrc && music.id !== undefined) {
+            delete rem._trySrc[music.id];
+            console.log('[play] canplay 真播放成功, 清 _trySrc[',music.id,']');
+        }
+    };
+    rem.audio[0].addEventListener('canplay', _okHandler);
     music_bar.goto(0);  // 进度条强制归零
     changeCover(music);    // 更新封面展示
     ajaxLyric(music, lyricCallback);     // ajax加载歌词
