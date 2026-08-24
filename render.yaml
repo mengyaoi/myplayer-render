@@ -1,0 +1,8 @@
+services:
+  - type: web
+    name: workbuddy-music-api
+    runtime: docker
+    plan: free
+    # 不手动设 PORT：Render 会自动注入自己的 PORT，serve.py 通过
+    # os.environ.get("PORT", 8010) 读取，自动对齐网关端口，避免端口错位导致 502
+    healthCheckPath: /

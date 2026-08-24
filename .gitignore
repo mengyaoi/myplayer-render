@@ -1,0 +1,9 @@
+.git
+
+__pycache__/
+*.pyc
+
+tools/serve_debug.log
+
+.vscode/
+.idea/

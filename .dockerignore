@@ -1,0 +1,15 @@
+.git
+.gitignore
+
+__pycache__
+*.pyc
+
+tools/*_test.py
+tools/_inline_test.py
+tools/_realsrc_check.py
+tools/_disk_check.py
+tools/_http_check.py
+
+tools/serve_debug.log
+
+*.log

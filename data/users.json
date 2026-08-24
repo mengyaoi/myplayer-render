@@ -1,0 +1,25 @@
+{
+  "123456": {
+    "code": 200,
+    "playlist": [
+      {
+        "id": "pl_001",
+        "name": "CTF 精选靶机歌单",
+        "coverImgUrl": "images/covers/c1001.png",
+        "creator": {
+          "nickname": "靶机管理员",
+          "avatarUrl": "images/covers/c1001.png"
+        }
+      },
+      {
+        "id": "pl_002",
+        "name": "我的私有歌单",
+        "coverImgUrl": "images/covers/c1003.png",
+        "creator": {
+          "nickname": "靶机管理员",
+          "avatarUrl": "images/covers/c1003.png"
+        }
+      }
+    ]
+  }
+}

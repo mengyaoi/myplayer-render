@@ -1,0 +1,172 @@
+{
+  "songs": [
+    {
+      "id": "1001",
+      "name": "赛博霓虹",
+      "artist": [
+        "虚拟歌手A"
+      ],
+      "album": "电子梦境",
+      "sources": {
+        "netease": {
+          "url_id": "1001",
+          "pic_id": "c1001",
+          "lyric_id": "1001",
+          "url": "audio/t1.wav"
+        },
+        "tencent": {
+          "url_id": "1001",
+          "pic_id": "c1001",
+          "lyric_id": "1001",
+          "url": "audio/t1.wav"
+        },
+        "kugou": {
+          "url_id": "1001",
+          "pic_id": "c1001",
+          "lyric_id": "1001",
+          "url": "audio/t1.wav"
+        }
+      }
+    },
+    {
+      "id": "1002",
+      "name": "午夜列车",
+      "artist": [
+        "合成器B"
+      ],
+      "album": "霓虹都市",
+      "sources": {
+        "netease": {
+          "url_id": "1002",
+          "pic_id": "c1002",
+          "lyric_id": "1002",
+          "url": "audio/t2.wav"
+        },
+        "tencent": {
+          "url_id": "1002",
+          "pic_id": "c1002",
+          "lyric_id": "1002",
+          "url": "audio/t2.wav"
+        },
+        "kugou": {
+          "url_id": "1002",
+          "pic_id": "c1002",
+          "lyric_id": "1002",
+          "url": "audio/t2.wav"
+        }
+      }
+    },
+    {
+      "id": "1003",
+      "name": "星河漫游",
+      "artist": [
+        "电子C"
+      ],
+      "album": "深空",
+      "sources": {
+        "netease": {
+          "url_id": "1003",
+          "pic_id": "c1003",
+          "lyric_id": "1003",
+          "url": "audio/t3.wav"
+        },
+        "tencent": {
+          "url_id": "1003",
+          "pic_id": "c1003",
+          "lyric_id": "1003",
+          "url": "audio/t3.wav"
+        },
+        "kugou": {
+          "url_id": "1003",
+          "pic_id": "c1003",
+          "lyric_id": "1003",
+          "url": "audio/t3.wav"
+        }
+      }
+    },
+    {
+      "id": "1004",
+      "name": "旧磁带",
+      "artist": [
+        "复古D"
+      ],
+      "album": "怀旧",
+      "sources": {
+        "netease": {
+          "url_id": "1004",
+          "pic_id": "c1004",
+          "lyric_id": "1004",
+          "url": "audio/t4.wav"
+        },
+        "tencent": {
+          "url_id": "1004",
+          "pic_id": "c1004",
+          "lyric_id": "1004",
+          "url": "audio/t4.wav"
+        },
+        "kugou": {
+          "url_id": "1004",
+          "pic_id": "c1004",
+          "lyric_id": "1004",
+          "url": "audio/t4.wav"
+        }
+      }
+    },
+    {
+      "id": "1005",
+      "name": "雨夜代码",
+      "artist": [
+        "极客E"
+      ],
+      "album": "二进制",
+      "sources": {
+        "netease": {
+          "url_id": "1005",
+          "pic_id": "c1005",
+          "lyric_id": "1005",
+          "url": "audio/t5.wav"
+        },
+        "tencent": {
+          "url_id": "1005",
+          "pic_id": "c1005",
+          "lyric_id": "1005",
+          "url": "audio/t5.wav"
+        },
+        "kugou": {
+          "url_id": "1005",
+          "pic_id": "c1005",
+          "lyric_id": "1005",
+          "url": "audio/t5.wav"
+        }
+      }
+    },
+    {
+      "id": "1006",
+      "name": "失效链接测试曲",
+      "artist": [
+        "CTF靶机"
+      ],
+      "album": "漏洞演示",
+      "sources": {
+        "netease": {
+          "url_id": "1006",
+          "pic_id": "c1006",
+          "lyric_id": "1006",
+          "url": ""
+        },
+        "tencent": {
+          "url_id": "1006",
+          "pic_id": "c1006",
+          "lyric_id": "1006",
+          "url": "audio/t6.wav"
+        },
+        "kugou": {
+          "url_id": "1006",
+          "pic_id": "c1006",
+          "lyric_id": "1006",
+          "url": "audio/t6.wav"
+        }
+      }
+    }
+  ]
+}
