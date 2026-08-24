@@ -35,7 +35,33 @@ var rem = [];
 function audioErr() {
     // 没播放过，直接跳过
     if(rem.playlist === undefined) return true;
-    
+
+    // === P2：播放失败先自动换源重试（netease→tencent→kugou），三源都失败才跳下一首 ===
+    // 背景：Render 部署下，仅用 netease 源时部分歌在网易云 CDN 返回 403/资源下架，
+    // 浏览器跟 302 后拿不到音频。同一 id 换 tencent/kugou 源往往有资源，可救回。
+    var cur = musicList[1].item[rem.playid];
+    if(cur && cur.id) {
+        // 已尝试的源顺序（netease 是默认，先试它之后的）
+        var SOURCES = ["netease", "tencent", "kugou"];
+        if(!rem._trySrc) rem._trySrc = {};                 // 记录每首歌试到哪个源
+        var key = cur.id;
+        if(rem._trySrc[key] === undefined) rem._trySrc[key] = "netease";  // 起始
+        var idx = SOURCES.indexOf(rem._trySrc[key]);
+        var nextSrc = SOURCES[idx + 1];
+        if(nextSrc) {
+            rem._trySrc[key] = nextSrc;
+            cur.source = nextSrc;   // 换源
+            cur.url = null;         // 强制重新取 url
+            cur.url_id = cur.id;
+            layer.msg('当前源播放失败，尝试 ' + nextSrc + ' 源');
+            ajaxUrl(cur, play);     // 用新源重新取并播放
+            return true;
+        }
+        // 三源都试完，清理标记
+        delete rem._trySrc[key];
+    }
+    // === 换源逻辑结束，以下为原逻辑：连续失败过多才停 ===
+
     if(rem.errCount > 10) { // 连续播放失败的歌曲过多
         layer.msg('似乎出了点问题~播放已停止');
         rem.errCount = 0;
@@ -43,7 +69,7 @@ function audioErr() {
         rem.errCount++;     // 记录连续播放失败的歌曲数目
         layer.msg('当前歌曲播放失败，自动播放下一首');
         nextMusic();    // 切换下一首歌
-    } 
+    }
 }
 
 // 点击暂停按钮的事件
@@ -330,6 +356,10 @@ function play(music) {
     }
     
     rem.errCount = 0;   // 连续播放失败的歌曲数归零
+    // 播放成功，清理该歌的换源重试标记（避免下一首同 id 歌跳过 netease）
+    if(rem._trySrc && music.id !== undefined) {
+        delete rem._trySrc[music.id];
+    }
     music_bar.goto(0);  // 进度条强制归零
     changeCover(music);    // 更新封面展示
     ajaxLyric(music, lyricCallback);     // ajax加载歌词
