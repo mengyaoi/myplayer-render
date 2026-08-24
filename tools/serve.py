@@ -11,9 +11,15 @@
 运行：python tools/serve.py  然后访问 http://127.0.0.1:8000/
 环境变量：PORT（默认 8010）
 """
-import json, os, re, mimetypes, http.client, urllib.parse
+import json, os, re, mimetypes, http.client, urllib.parse, time as _time
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
+
+# URL/Pic 缓存：(server, mid) -> (url, expire_at_ts)
+# 避免重复打 Meting 镜像（每首 0.3s 但偶尔镜像返回 rows=0 抖动/超时）
+# 同一首歌 5 分钟内直接返回缓存。失效/下架的歌曲不重复浪费时间。
+_URL_CACHE = {}
+_URL_CACHE_TTL = int(os.environ.get("URL_CACHE_TTL", "300"))  # 默认 5 分钟
 
 ROOT        = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA        = os.path.join(ROOT, "data")
@@ -312,14 +318,23 @@ def _song_url(server, mid):
     改为把 auth URL 强制 https 后**直接返回给浏览器**，由浏览器自行跟 302 跳转，
     浏览器链路通常优于 Render 服务器；同时解决 Mixed Content（http→https）。
 
+    新增（P1 预案3）：按 (server, mid) 缓存 auth URL 5 分钟。同一首歌重复点播
+    直接秒回；且能避开"镜像偶尔 rows=0"抖动——拿到过一次就不会再被空响应浪费时间。
+
     如需服务器端解析（极少数浏览器也播不了时），设环境变量
     RESOLVE_AUDIO_URL=1 走旧逻辑兜底。
     """
-    import time as _t
+    key = (server, mid)
+    now = _time.time()
+    cached = _URL_CACHE.get(key)
+    if cached and cached[1] > now:
+        print("[song_url] cache hit (%.0fs left) %s/%s" % (cached[1] - now, server, mid), flush=True)
+        return cached[0]
+
     print("[song_url] start server=%s mid=%s" % (server, mid), flush=True)
-    t0 = _t.time()
+    t0 = _time.time()
     rows = _meting_get_list(server, "song", mid, 1)
-    print("[song_url] meting list done (%.2fs) rows=%d" % (_t.time() - t0, len(rows)), flush=True)
+    print("[song_url] meting list done (%.2fs) rows=%d" % (_time.time() - t0, len(rows)), flush=True)
     if not rows:
         return ""
     auth_url = rows[0].get("url", "") or ""
@@ -327,12 +342,17 @@ def _song_url(server, mid):
         return ""
     # 强制 https，避免 Mixed Content 且统一协议
     auth_url = auth_url.replace("http://", "https://", 1)
+    # 写入缓存
+    _URL_CACHE[key] = (auth_url, now + _URL_CACHE_TTL)
+    if len(_URL_CACHE) > 500:
+        _URL_CACHE.clear()  # 简单粗暴，>500 直接清，防内存泄漏
+
     # 服务器端解析兜底（默认关闭，避免 CDN 超时拖死）
     if os.environ.get("RESOLVE_AUDIO_URL", "").strip() == "1":
         print("[song_url] meting url: %s (server-resolve mode)" % auth_url, flush=True)
-        t1 = _t.time()
+        t1 = _time.time()
         final = _resolve_get_redirect(auth_url)
-        print("[song_url] resolve done (%.2fs) result: %s" % (_t.time() - t1, final[:80] if final else "(empty)"), flush=True)
+        print("[song_url] resolve done (%.2fs) result: %s" % (_time.time() - t1, final[:80] if final else "(empty)"), flush=True)
         return final
     # 默认：直接把 auth URL 交浏览器，自己跟 302
     print("[song_url] return auth url to browser (no server resolve): %s" % auth_url[:90], flush=True)
@@ -340,14 +360,24 @@ def _song_url(server, mid):
 
 
 def _song_pic(server, mid):
-    """list 返回的 pic 字段是带 auth 的代理 URL；跟 302 拿网易云真直链"""
+    """list 返回的 pic 字段是带 auth 的代理 URL；缓存后直接强制 https 返回浏览器"""
+    key = (server, mid, "pic")
+    now = _time.time()
+    cached = _URL_CACHE.get(key)
+    if cached and cached[1] > now:
+        return cached[0]
     rows = _meting_get_list(server, "song", mid, 1)
     if not rows:
         return ""
     auth_url = rows[0].get("pic", "") or ""
     if not auth_url:
         return ""
-    return _resolve_get_redirect(auth_url)
+    auth_url = auth_url.replace("http://", "https://", 1)
+    _URL_CACHE[key] = (auth_url, now + _URL_CACHE_TTL)
+    if len(_URL_CACHE) > 500:
+        _URL_CACHE.clear()
+    # pic 走服务器解析也很快（pic 是静态资源，CDN 通常可达），不再多跳一次
+    return auth_url
 
 
 def _song_lrc(server, mid):
