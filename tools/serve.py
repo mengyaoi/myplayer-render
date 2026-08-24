@@ -167,15 +167,17 @@ def _resolve_get_redirect(target_url):
     host = p.hostname
     url = target_url
     last_status = None
+    # 播放 URL 不值得等 15s；单节点超时立即失败，避免拖死整次播放
+    _TO = int(os.environ.get("RESOLVE_TIMEOUT", "5"))
     for attempt in range(6):
         ta = _t.time()
         try:
-            c = http.client.HTTPSConnection(host, timeout=15) if p.scheme == "https" else http.client.HTTPConnection(host, timeout=15)
+            c = http.client.HTTPSConnection(host, timeout=_TO) if p.scheme == "https" else http.client.HTTPConnection(host, timeout=_TO)
             c.request("GET", p.path + ("?" + p.query if p.query else ""),
                       headers={"User-Agent": UA, "Referer": DEFAULT_REFERER})
             r = c.getresponse()
             if c.sock:
-                c.sock.settimeout(15)
+                c.sock.settimeout(_TO)
             r.read()  # 关连接
             c.close()
             last_status = r.status
@@ -303,7 +305,16 @@ def remote_search(server, name):
 
 
 def _song_url(server, mid):
-    """先 type=song 拿详情（含 auth 的 url 字段），再跟 302 拿真实 MP3"""
+    """拿 Meting 返回的 auth URL（带签名的临时音频地址）。
+
+    关键优化（预案2）：不再让 Render 服务器去连网易云 CDN 解析真实 MP3 直链——
+    海外实例连 m*.music.126.net 部分节点会超时（实测单次 120s），拖死播放。
+    改为把 auth URL 强制 https 后**直接返回给浏览器**，由浏览器自行跟 302 跳转，
+    浏览器链路通常优于 Render 服务器；同时解决 Mixed Content（http→https）。
+
+    如需服务器端解析（极少数浏览器也播不了时），设环境变量
+    RESOLVE_AUDIO_URL=1 走旧逻辑兜底。
+    """
     import time as _t
     print("[song_url] start server=%s mid=%s" % (server, mid), flush=True)
     t0 = _t.time()
@@ -314,11 +325,18 @@ def _song_url(server, mid):
     auth_url = rows[0].get("url", "") or ""
     if not auth_url:
         return ""
-    print("[song_url] meting url: %s" % auth_url, flush=True)
-    t1 = _t.time()
-    final = _resolve_get_redirect(auth_url)
-    print("[song_url] resolve done (%.2fs) result: %s" % (_t.time() - t1, final[:80] if final else "(empty)"), flush=True)
-    return final
+    # 强制 https，避免 Mixed Content 且统一协议
+    auth_url = auth_url.replace("http://", "https://", 1)
+    # 服务器端解析兜底（默认关闭，避免 CDN 超时拖死）
+    if os.environ.get("RESOLVE_AUDIO_URL", "").strip() == "1":
+        print("[song_url] meting url: %s (server-resolve mode)" % auth_url, flush=True)
+        t1 = _t.time()
+        final = _resolve_get_redirect(auth_url)
+        print("[song_url] resolve done (%.2fs) result: %s" % (_t.time() - t1, final[:80] if final else "(empty)"), flush=True)
+        return final
+    # 默认：直接把 auth URL 交浏览器，自己跟 302
+    print("[song_url] return auth url to browser (no server resolve): %s" % auth_url[:90], flush=True)
+    return auth_url
 
 
 def _song_pic(server, mid):
