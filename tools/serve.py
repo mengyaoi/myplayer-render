@@ -162,19 +162,24 @@ def _resolve_get_redirect(target_url):
     """对任意 URL 跟 302 最多 5 次，返回最终 URL（失败返回空串）。
     某些 Meting 镜像首次访问会 404（防滥用），自动重试一次。"""
     import time as _t
+    print("[resolve] start: %s" % target_url, flush=True)
     p = urllib.parse.urlsplit(target_url)
     host = p.hostname
     url = target_url
     last_status = None
     for attempt in range(6):
+        ta = _t.time()
         try:
             c = http.client.HTTPSConnection(host, timeout=15) if p.scheme == "https" else http.client.HTTPConnection(host, timeout=15)
             c.request("GET", p.path + ("?" + p.query if p.query else ""),
                       headers={"User-Agent": UA, "Referer": DEFAULT_REFERER})
             r = c.getresponse()
+            if c.sock:
+                c.sock.settimeout(15)
             r.read()  # 关连接
             c.close()
             last_status = r.status
+            print("[resolve] attempt=%d host=%s status=%s (%.2fs)" % (attempt, host, r.status, _t.time() - ta), flush=True)
             if r.status in (301, 302, 303, 307, 308):
                 loc = r.getheader("Location") or r.getheader("location")
                 if not loc:
@@ -188,6 +193,7 @@ def _resolve_get_redirect(target_url):
                 continue
             # 200：可能是直链 / 或 mp3 body
             if r.status == 200:
+                print("[resolve] result: %s" % url, flush=True)
                 return url
             # 404：服务端防滥用，等下重试
             if r.status == 404 and attempt < 5:
@@ -197,8 +203,10 @@ def _resolve_get_redirect(target_url):
                 url = target_url
                 continue
             return ""
-        except Exception:
+        except Exception as e:
+            print("[resolve] attempt=%d host=%s EXCEPTION %s (%.2fs)" % (attempt, host, repr(e), _t.time() - ta), flush=True)
             return ""
+    print("[resolve] result(fallback): %s" % (url if last_status == 200 else ""), flush=True)
     return url if last_status == 200 else ""
 
 
@@ -296,13 +304,21 @@ def remote_search(server, name):
 
 def _song_url(server, mid):
     """先 type=song 拿详情（含 auth 的 url 字段），再跟 302 拿真实 MP3"""
+    import time as _t
+    print("[song_url] start server=%s mid=%s" % (server, mid), flush=True)
+    t0 = _t.time()
     rows = _meting_get_list(server, "song", mid, 1)
+    print("[song_url] meting list done (%.2fs) rows=%d" % (_t.time() - t0, len(rows)), flush=True)
     if not rows:
         return ""
     auth_url = rows[0].get("url", "") or ""
     if not auth_url:
         return ""
-    return _resolve_get_redirect(auth_url)
+    print("[song_url] meting url: %s" % auth_url, flush=True)
+    t1 = _t.time()
+    final = _resolve_get_redirect(auth_url)
+    print("[song_url] resolve done (%.2fs) result: %s" % (_t.time() - t1, final[:80] if final else "(empty)"), flush=True)
+    return final
 
 
 def _song_pic(server, mid):
