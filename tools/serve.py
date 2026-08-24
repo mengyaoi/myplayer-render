@@ -139,6 +139,57 @@ def _http_get(url, timeout=15, referer=DEFAULT_REFERER):
     return r.status, body
 
 
+def _probe_url_ok(auth_url, timeout=5):
+    """HEAD 探测 auth_url 是否真实可达（跟随 302，最多 5 次跳）。
+
+    用途：网易云 403/资源下架时，auth_url 返回 200 给 Meting 镜像，但
+    浏览器跟 302 后到网易云 CDN 拿不到音频。Render 服务器用 HEAD 探测
+    比 GET 快得多（不取 body），5 秒内能判断这个 url 是否真可用。
+
+    返回：(ok: bool, final_status: int, final_url: str)
+        ok=True  表示至少 2xx 响应，可交给浏览器播
+        ok=False 表示 403/404/超时，不能用
+    """
+    import time as _t
+    p = urllib.parse.urlsplit(auth_url)
+    host = p.hostname
+    url = auth_url
+    last_status = None
+    for _ in range(6):
+        ta = _t.time()
+        try:
+            c = http.client.HTTPSConnection(host, timeout=timeout) if p.scheme == "https" else http.client.HTTPConnection(host, timeout=timeout)
+            c.request("HEAD", urllib.parse.urlsplit(url).path + ("?" + urllib.parse.urlsplit(url).query if urllib.parse.urlsplit(url).query else ""),
+                      headers={"User-Agent": UA, "Referer": DEFAULT_REFERER})
+            r = c.getresponse()
+            if c.sock:
+                c.sock.settimeout(timeout)
+            r.read()  # 丢 body
+            c.close()
+        except Exception as e:
+            print("[probe] ERR: %s url=%s" % (e, url[:80]), flush=True)
+            return False, None, url
+        last_status = r.status
+        print("[probe] host=%s status=%d (%.2fs)" % (host, r.status, _t.time() - ta), flush=True)
+        # 302/301 跟到下一跳
+        if r.status in (301, 302, 303, 307, 308):
+            loc = r.getheader("Location") or r.getheader("location")
+            if not loc:
+                return False, last_status, url
+            url2 = urllib.parse.urljoin(url, loc)
+            if url2 == url:
+                return False, last_status, url
+            url = url2
+            host = urllib.parse.urlsplit(url).hostname
+            continue
+        # 2xx 视为可用
+        if 200 <= r.status < 300:
+            return True, last_status, url
+        # 403/404/5xx 视为不可用
+        return False, last_status, url
+    return False, last_status, url
+
+
 def _meting_get_list(server, mtype, mid, limit=30):
     """P2: 遍历所有 Meting 镜像源，任一成功即返回；全部失败返回 []。"""
     q = urllib.parse.urlencode({"server": server, "type": mtype, "id": mid, "limit": limit})
@@ -321,42 +372,63 @@ def _song_url(server, mid):
     新增（P1 预案3）：按 (server, mid) 缓存 auth URL 5 分钟。同一首歌重复点播
     直接秒回；且能避开"镜像偶尔 rows=0"抖动——拿到过一次就不会再被空响应浪费时间。
 
-    如需服务器端解析（极少数浏览器也播不了时），设环境变量
-    RESOLVE_AUDIO_URL=1 走旧逻辑兜底。
+    P3 升级：默认启用 HEAD 探测 + 多源 fallback。
+    拿到 auth url 后用 HEAD 探测 5 秒内是否 2xx：
+      - 2xx：返回给浏览器
+      - 403/404/超时：自动试下个源（netease → tencent），
+        探测通过才返回，否则返回 ""
+    这样前端只管播，不用关心换源逻辑；避免浏览器 403 后无 error 触发的死循环。
+    探测模式由环境变量 DISABLE_URL_PROBE=1 关闭（紧急回滚用）。
     """
-    key = (server, mid)
-    now = _time.time()
-    cached = _URL_CACHE.get(key)
-    if cached and cached[1] > now:
-        print("[song_url] cache hit (%.0fs left) %s/%s" % (cached[1] - now, server, mid), flush=True)
-        return cached[0]
+    probe_enabled = os.environ.get("DISABLE_URL_PROBE", "").strip() != "1"
+    FALLBACK_SOURCES = ["netease", "tencent"]  # kugou Meting 镜像 id=undefined，已剔除
+    if server in FALLBACK_SOURCES:
+        order = [server] + [x for x in FALLBACK_SOURCES if x != server]
+    else:
+        order = list(FALLBACK_SOURCES)
 
-    print("[song_url] start server=%s mid=%s" % (server, mid), flush=True)
-    t0 = _time.time()
-    rows = _meting_get_list(server, "song", mid, 1)
-    print("[song_url] meting list done (%.2fs) rows=%d" % (_time.time() - t0, len(rows)), flush=True)
-    if not rows:
-        return ""
-    auth_url = rows[0].get("url", "") or ""
-    if not auth_url:
-        return ""
-    # 强制 https，避免 Mixed Content 且统一协议
-    auth_url = auth_url.replace("http://", "https://", 1)
-    # 写入缓存
-    _URL_CACHE[key] = (auth_url, now + _URL_CACHE_TTL)
-    if len(_URL_CACHE) > 500:
-        _URL_CACHE.clear()  # 简单粗暴，>500 直接清，防内存泄漏
-
-    # 服务器端解析兜底（默认关闭，避免 CDN 超时拖死）
-    if os.environ.get("RESOLVE_AUDIO_URL", "").strip() == "1":
-        print("[song_url] meting url: %s (server-resolve mode)" % auth_url, flush=True)
+    last_err = ""
+    for src in order:
+        key = (src, mid)
+        now = _time.time()
+        cached = _URL_CACHE.get(key)
+        if cached and cached[1] > now:
+            print("[song_url] cache hit (%.0fs left) %s/%s" % (cached[1] - now, src, mid), flush=True)
+            return cached[0]
+        print("[song_url] start server=%s mid=%s" % (src, mid), flush=True)
+        t0 = _time.time()
+        rows = _meting_get_list(src, "song", mid, 1)
+        print("[song_url] meting list done (%.2fs) rows=%d" % (_time.time() - t0, len(rows)), flush=True)
+        if not rows:
+            last_err = "no rows from %s" % src
+            continue
+        auth_url = rows[0].get("url", "") or ""
+        if not auth_url:
+            last_err = "empty url from %s" % src
+            continue
+        auth_url = auth_url.replace("http://", "https://", 1)
+        if not probe_enabled:
+            _URL_CACHE[key] = (auth_url, now + _URL_CACHE_TTL)
+            if len(_URL_CACHE) > 500:
+                _URL_CACHE.clear()
+            print("[song_url] return auth url to browser (probe disabled): %s" % auth_url[:90], flush=True)
+            return auth_url
         t1 = _time.time()
-        final = _resolve_get_redirect(auth_url)
-        print("[song_url] resolve done (%.2fs) result: %s" % (_time.time() - t1, final[:80] if final else "(empty)"), flush=True)
-        return final
-    # 默认：直接把 auth URL 交浏览器，自己跟 302
-    print("[song_url] return auth url to browser (no server resolve): %s" % auth_url[:90], flush=True)
-    return auth_url
+        ok, status, final_url = _probe_url_ok(auth_url, timeout=5)
+        dt = _time.time() - t1
+        if ok:
+            _URL_CACHE[key] = (final_url, now + _URL_CACHE_TTL)
+            if len(_URL_CACHE) > 500:
+                _URL_CACHE.clear()
+            print("[song_url] probe OK (%.2fs status=%d) -> %s" % (dt, status, final_url[:90]), flush=True)
+            return final_url
+        last_err = "%s status=%s" % (src, status)
+        print("[song_url] probe FAIL (%.2fs) %s, try next source" % (dt, last_err), flush=True)
+        _URL_CACHE[key] = ("", now + 60)  # 负缓存 60s
+        if len(_URL_CACHE) > 500:
+            _URL_CACHE.clear()
+    print("[song_url] all sources exhausted: %s" % last_err, flush=True)
+    return ""
 
 
 def _song_pic(server, mid):

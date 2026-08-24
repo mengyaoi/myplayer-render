@@ -215,21 +215,6 @@ function updateProgress(){
 	music_bar.goto(rem.audio[0].currentTime / rem.audio[0].duration);
     // 同步歌词显示
 	scrollLyric(rem.audio[0].currentTime);
-
-    // === P2 兜底：网易云 403 时 audio 不报错也不更新进度，8 秒还是 0 就强制换源 ===
-    var a = rem.audio[0];
-    if(a.currentTime === 0 && a.readyState < 3) {
-        // 还在加载中（readyState < HAVE_FUTURE_DATA）
-        if(!rem._stallSince) rem._stallSince = Date.now();
-        if(Date.now() - rem._stallSince > 8000) {
-            console.warn('[updateProgress] 8秒还在loading且currentTime=0, 强制换源');
-            rem._stallSince = null;
-            audioErr();
-        }
-    } else {
-        // 有进度了，重置 stall 计时
-        rem._stallSince = null;
-    }
 }
 
 // 显示的列表中的某一项点击后的处理函数
@@ -330,32 +315,6 @@ function initAudio() {
     rem.audio[0].addEventListener('pause', audioPause);   // 暂停
     $(rem.audio[0]).on('ended', autoNextMusic);   // 播放结束
     rem.audio[0].addEventListener('error', audioErr);   // 播放器错误处理
-    // === P2 兜底：网易云 403 时 audio 可能不触发 error，而是卡在 stalled/waiting，再加 stalled + play Promise reject 兜底 ===
-    rem.audio[0].addEventListener('stalled', function(){
-        console.warn('[audio] stalled event fired -> 触发换源');
-        // 延迟 500ms 再触发，避免正常缓冲被误判
-        setTimeout(function(){
-            if(rem.audio && rem.audio[0] && rem.audio[0].paused && rem.audio[0].currentTime === 0) {
-                audioErr();
-            }
-        }, 800);
-    });
-    rem.audio[0].addEventListener('suspend', function(){
-        console.warn('[audio] suspend event fired (可能 403 资源被拒)');
-    });
-    // 监听 play() promise reject（src 不可用时不会触发 error，而是 promise reject）
-    var _origPlay = rem.audio[0].play.bind(rem.audio[0]);
-    rem.audio[0].play = function(){
-        var p = _origPlay();
-        if(p && typeof p.catch === 'function'){
-            p.catch(function(e){
-                console.warn('[audio] play() promise reject:', (e && e.name) || e);
-                // play() 失败通常是 src 不可用，触发换源
-                setTimeout(function(){ audioErr(); }, 300);
-            });
-        }
-        return p;
-    };
 }
 
 
