@@ -4,6 +4,7 @@ __pycache__/
 *.pyc
 
 tools/serve_debug.log
+tools/_*.py
 
 .vscode/
 .idea/
