@@ -130,6 +130,11 @@ def _http_get(url, timeout=15, referer=DEFAULT_REFERER):
     c = cls(host, timeout=timeout)
     headers = {"User-Agent": UA, "Referer": referer}
     c.request("GET", p.path + ("?" + p.query if p.query else ""), headers=headers)
+    # 关键：request 后 connect 已完成，c.sock 存在；提前设超时，
+    # 覆盖 getresponse() 等待「响应头」阶段（原代码只在 read() 前设，
+    # 若响应头卡住会无限 hang，Render 杀连接 -> ERR_CONNECTION_CLOSED）
+    if c.sock:
+        c.sock.settimeout(timeout)
     r = c.getresponse()
     # 读 body 阶段也必须受超时控制（最可靠方案：直接给底层 socket 设超时）
     if c.sock:
@@ -639,8 +644,16 @@ class Handler(BaseHTTPRequestHandler):
             except (TypeError, ValueError):
                 count, pages = 10, 1
             callback = g("callback")
-            res = handle(types, source, name, sid, uid, count, pages, callback)
-            body = json.dumps(res, ensure_ascii=False)
+            try:
+                res = handle(types, source, name, sid, uid, count, pages, callback)
+                body = json.dumps(res, ensure_ascii=False)
+            except Exception as e:
+                import traceback as _tb
+                _tb.print_exc()
+                print("[api] handle crashed types=%r source=%r id=%r: %r"
+                      % (types, source, sid, e), flush=True)
+                res = {"code": 500, "error": "server internal error", "detail": str(e)}
+                body = json.dumps(res, ensure_ascii=False)
             if callback and re.match(r"^[A-Za-z_$][A-Za-z0-9_$]*$", callback):
                 payload = (callback + "(" + body + ")").encode("utf-8")
                 ct = "application/javascript"
