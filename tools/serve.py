@@ -419,7 +419,23 @@ def _song_url(server, mid):
             print("[song_url] return auth url to browser (probe disabled): %s" % auth_url[:90], flush=True)
             return auth_url
         t1 = _time.time()
-        ok, status, final_url = _probe_url_ok(auth_url, timeout=5)
+        # 硬超时兜底：网易云 CDN 个别节点对 HEAD 响应异常会卡死底层 socket
+        # （实测一次卡 40s），http.client 的 timeout 在 getresponse/read 阶段不兜底。
+        # 用线程池在 8s 处硬切断，且不等待后台卡死线程，避免单首歌拖死请求线程。
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FTimeout
+        _ex = ThreadPoolExecutor(max_workers=1)
+        _fut = _ex.submit(_probe_url_ok, auth_url, timeout=5)
+        try:
+            ok, status, final_url = _fut.result(timeout=8)
+        except _FTimeout:
+            print("[song_url] probe HARD TIMEOUT(8s) -> treat as FAIL: %s" % auth_url[:80], flush=True)
+            ok, status, final_url = False, None, auth_url
+        except Exception as _e:
+            print("[song_url] probe ERR %r -> treat as FAIL" % _e, flush=True)
+            ok, status, final_url = False, None, auth_url
+        finally:
+            # 不等后台卡死线程（若 8s 超时，后台还在等 socket，直接遗弃，随进程回收）
+            _ex.shutdown(wait=False)
         dt = _time.time() - t1
         if ok:
             _URL_CACHE[key] = (final_url, now + _URL_CACHE_TTL)
