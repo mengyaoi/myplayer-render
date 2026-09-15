@@ -107,7 +107,7 @@ def get_userlist_local(uid):
 _METING_SOURCES = [
     s.strip() for s in os.environ.get(
         "METING_API_URL",
-        "https://api.i-meto.com/meting/api,https://mikus.ink/meting/api"
+        "https://api.i-meto.com/meting/api"
     ).split(",") if s.strip()
 ]
 # 主源（用于 Referer / 默认），取第一个
