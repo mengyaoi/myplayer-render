@@ -798,7 +798,10 @@ function initList() {
             var tmp_item = playerReaddata('playing');
             if(tmp_item) {  // 读取到了正在播放列表
                 musicList[1].item = tmp_item;
-                mkPlayer.defaultlist = 1;   // 默认显示正在播放列表
+                // 注意：这里**故意不再**把 defaultlist 改成 1。
+                // 旧队列只有你上次听过的那几首，若让它"劫持"首页默认视图，
+                // 会让人误以为整个曲库只有几首歌（实际曲库在「播放列表」里）。
+                // 想继续上次队列，点顶部「正在播放」标签即可。
             }
             
         } else if(i == 2) { // 历史记录列表

@@ -315,7 +315,8 @@ function ajaxPlayList(lid, id, callback) {
         }
         var tempList = {
             id: lid,
-            name: "网易云歌单 " + lid,
+            // 保留 musicList.js 里配好的显示名（如"我喜欢的音乐"），没有才退化成"网易云歌单 <id>"
+            name: musicList[id].name || ("网易云歌单 " + lid),
             cover: (arr[0] && arr[0].pic) ? arr[0].pic : "",
             creatorName: "",
             creatorAvatar: "",
