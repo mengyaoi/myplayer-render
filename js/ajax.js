@@ -85,8 +85,10 @@ function ajaxSearch() {
                 url_id: mid,
                 pic_id: metingId(it.pic),
                 lyric_id: metingId(it.lrc),
-                pic: null,
-                url: null
+                pic: it.pic || null,
+                // 关键：Meting 返回的 url 字段是自带 auth 的代理 URL，浏览器可直接跟 302 播放，
+                // 不要再二次请求 type=url（该镜像对不带 auth 的 url 请求返回 401）。
+                url: it.url || null
             };
             musicList[0].item.push(tempItem);   // 保存到搜索结果临时列表中
             addItem(no, tempItem.name, tempItem.artist, tempItem.album);  // 在前端显示
@@ -125,15 +127,30 @@ function ajaxUrl(music, callback)
         return true;
     }
     
-    metingQuery(music.source, "url", music.id, function(arr){
-        if(!arr || !arr.length || !arr[0].url) {
+    // 走后端解析直链（保留原 MKPlayer 架构：types=url 由后端代理 Meting）。
+    // 注意：不能直接 metingQuery(type="url") 直连——该镜像对不带 auth 的 url 请求返回 401。
+    // 搜索/真实歌单已在列表构建时把 it.url（自带 auth 的代理 URL）写入 music.url，
+    // 走到这里的通常是本地歌单(pl_xxx)曲目；Render 上后端出站被限流可能超时，但绝不再刷 401。
+    $.ajax({
+        type: mkPlayer.method,
+        url: mkPlayer.api,
+        data: "types=url&id=" + encodeURIComponent(music.id) + "&source=" + encodeURIComponent(music.source),
+        dataType: "jsonp",
+        timeout: 15000,
+        success: function(jsonData){
+            if(jsonData && jsonData.url) {
+                music.url = jsonData.url;    // 代理 URL，浏览器自行跟 302
+            } else {
+                music.url = "err";
+            }
+            updateMinfo(music); // 更新音乐信息
+            callback(music);    // 回调函数
+        },
+        error: function(){
             music.url = "err";
-        } else {
-            music.url = arr[0].url;    // 记录结果（Meting 返回的代理 URL，由浏览器自行跟 302）
+            updateMinfo(music);
+            callback(music);
         }
-        updateMinfo(music); // 更新音乐信息
-        callback(music);    // 回调函数
-        return true;
     });
     return true;
 }
@@ -304,7 +321,9 @@ function ajaxPlayList(lid, id, callback) {
                 pic_id: metingId(it.pic),
                 lyric_id: metingId(it.lrc),
                 pic: it.pic || null,
-                url: null
+                // 关键同搜索：Meting 返回的 url 字段是自带 auth 的代理 URL，浏览器可直接跟 302 播放，
+                // 不要再二次请求 type=url（该镜像对不带 auth 的 url 请求返回 401）。
+                url: it.url || null
             });
         }
         musicList[id] = tempList;
