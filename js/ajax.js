@@ -368,12 +368,27 @@ function ajaxLyric(music, callback) {
         }
     }
 
-    // 优先用 search/playlist 给的现成带 auth 歌词链接：该链接返回 JSON 数组 [{lrc:"..."}]
+    // 优先用 search/playlist 给的现成带 auth 歌词链接。
+    // 注意：实测该链接直接返回【纯 LRC 文本】(不是 JSON 数组)——不同镜像格式不一致，
+    // 所以两种都兼容；且失败时【不能】再回退 bySearch，否则 fromAuthUrl→bySearch→fromAuthUrl 会死循环。
     function fromAuthUrl(u) {
         $.ajax({
             url: u, dataType: "json", timeout: 10000,
             success: function(arr){ useLrcText(arr && arr[0] ? arr[0].lrc : ''); },
-            error: function(){ bySearch(); }
+            error: function(){
+                $.ajax({
+                    url: u, dataType: "text", timeout: 10000,
+                    success: function(t){
+                        t = t || '';
+                        // 实为 JSON 却被当文本拿到：手动解析
+                        if(t.charAt(0) === '[' && t.indexOf('"lrc"') > -1) {
+                            try { var a = JSON.parse(t); useLrcText(a && a[0] ? a[0].lrc : ''); return; } catch(e) {}
+                        }
+                        useLrcText(t);
+                    },
+                    error: function(){ callback('', music.lyric_id); }
+                });
+            }
         });
     }
 
