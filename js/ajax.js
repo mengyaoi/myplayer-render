@@ -8,21 +8,41 @@
  *   本地歌单(pl_xxx)/删除/用户同步仍走 mkPlayer.api 后端。
  *************************************************/
 
-// ===== 前端直连 Meting 配置（绕过 Render 出站限流）=====
-var METING_API = "https://api.i-meto.com/meting/api";
+// ===== 前端直连 Meting 配置 =====
+// 2026-11-08 换源：api.i-meto.com 的 type=url 端点已彻底失效
+//   （带 auth → 404 空体，不带 auth → 401「服务器未知异常」），导致全部歌曲无法播放。
+// 现改用 api.qijieya.cn，实测：
+//   - type=url 无需任何 auth，直接返回 audio/mpeg 音频流（206 / 支持 Range）
+//   - CORS: Access-Control-Allow-Origin: *
+//   - 国内直连 0.3s 左右，无需代理
+//   - 无效 id 返回 200 + text/html 空体（<audio> 会报错 → 自动跳下一首）
+var METING_API = "https://api.qijieya.cn/meting/";
 
-// 从 Meting 返回的代理 URL 中抠出音乐 id
+// 从 Meting 返回的代理 URL 中抠出 id（歌曲 id / 图片 id 都在 url 的 id 参数里）
 function metingId(u) {
     if(!u) return "";
     var m = ("" + u).match(/[?&]id=([^&]+)/);
     return m ? m[1] : "";
 }
 
-// 直连 Meting，依赖其 CORS（默认 Access-Control-Allow-Origin: *）
-function metingQuery(server, type, id, cb) {
+// 直接拼出 Meting 端点地址。
+// 因为 qijieya 的 url/pic/lrc 端点不需要 auth，只要拿到 id 就能拼，
+// 所以缺链接时不必再"按歌名回搜"，直接构造即可。
+function metingUrl(server, type, id) {
+    if(!id) return "";
+    return METING_API + "?server=" + encodeURIComponent(server || "netease")
+         + "&type=" + encodeURIComponent(type)
+         + "&id=" + encodeURIComponent(id);
+}
+
+// 直连 Meting，依赖其 CORS（Access-Control-Allow-Origin: *）
+// limit 可选：qijieya 的 search 默认只回 30 条，传 limit 可拿更多（实测 limit=50 正常）
+function metingQuery(server, type, id, cb, limit) {
+    var d = { server: server, type: type, id: id };
+    if(limit) d.limit = limit;
     $.ajax({
         url: METING_API,
-        data: { server: server, type: type, id: id },
+        data: d,
         dataType: "json",
         crossDomain: true,
         timeout: 15000,
@@ -34,17 +54,15 @@ function metingQuery(server, type, id, cb) {
     });
 }
 
-// 用 Meting search 兜底解析出「现成的、带 auth 的代理 URL」。
-// 为什么必须这样：线上实测 api.i-meto.com 对不带 auth 的 type=url / type=pic / type=lrc
-// 一律返回 401 /「鉴权失败,非法调用」——auth 是按 (type,id) 签名的，浏览器无法自造；
-// 只有 type=search / type=playlist 无需 auth，且响应里每条都自带现成的 auth 链接。
-// 所以一旦缺 url/pic/lrc，唯一可行的客户端方案就是拿歌名回搜一次，取回带 auth 的链接。
+// 兜底：按歌名回搜一次，用来补「图片」。
+// 为什么只有图片需要兜底：qijieya 的 pic 端点用的是图片 id（如 109951172453712025），
+// 与歌曲 id 不是同一套，无法由歌曲 id 直接拼出来；而 url / lrc 都能用歌曲 id 直接拼。
 function metingResolveBySearch(music, cb) {
     var kw = (music.name || "").trim();
     if(!kw) { cb(null); return; }
     var servers = [];
     if(music.source) servers.push(music.source);
-    if(servers.indexOf("netease") < 0) servers.push("netease");   // 镜像仅网易云稳，兜底
+    if(servers.indexOf("netease") < 0) servers.push("netease");   // 网易云最稳，兜底
     var si = 0;
     (function next(){
         if(si >= servers.length) { cb(null); return; }
@@ -56,7 +74,7 @@ function metingResolveBySearch(music, cb) {
                 if(metingId(arr[i].url) === String(music.id)) { hit = arr[i]; break; }
             }
             if(!hit) hit = arr[0];   // 同 id 未命中，退而取第一条同名结果
-            if(hit && hit.url) cb(hit); else next();
+            if(hit && (hit.pic || hit.url)) { hit._src = srv; cb(hit); } else next();
         });
     })();
 }
@@ -73,6 +91,7 @@ function ajaxSearch() {
         tmpLoading = layer.msg('搜索中', {icon: 16,shade: 0.01});
     }
     
+    // search 一次取 100 条：前端每页 20 条（mkPlayer.loadcount），可支持翻 5 页
     metingQuery(rem.source, "search", rem.wd, function(arr){
         if(tmpLoading) layer.close(tmpLoading);    // 关闭加载中动画
         
@@ -103,20 +122,22 @@ function ajaxSearch() {
             no ++;
             var it = page[i];
             var mid = metingId(it.url);
+            // qijieya 用 name/artist，i-meto 用 title/author —— 两套都兼容
+            var itName   = it.title  || it.name   || "";
+            var itAuthor = it.author || it.artist || "";
             var tempItem =  {
                 id: mid,
-                name: it.title,
-                artist: (it.author || "").split(/[/、,|&]/)[0].trim(),
-                album: it.author || "",
+                name: itName,
+                artist: itAuthor.split(/[/、,|&]/)[0].trim(),
+                album: itAuthor,
                 source: rem.source,
                 url_id: mid,
                 pic_id: metingId(it.pic),
-                lyric_id: metingId(it.lrc),
+                lyric_id: mid,
                 pic: it.pic || null,
-                lrc_url: it.lrc || null,   // 现成的带 auth 歌词链接（直连 type=lrc 会"鉴权失败"）
-                // 关键：Meting 返回的 url 字段是自带 auth 的代理 URL，浏览器可直接跟 302 播放，
-                // 不要再二次请求 type=url（该镜像对不带 auth 的 url 请求返回 401）。
-                url: it.url || null
+                // url / lrc 端点不需要 auth，缺了直接用歌曲 id 拼，不必回搜
+                lrc_url: it.lrc || metingUrl(rem.source, "lrc", mid),
+                url: it.url || metingUrl(rem.source, "url", mid)
             };
             musicList[0].item.push(tempItem);   // 保存到搜索结果临时列表中
             addItem(no, tempItem.name, tempItem.artist, tempItem.album);  // 在前端显示
@@ -135,13 +156,20 @@ function ajaxSearch() {
         }
         
         if(rem.loadPage == 2) listToTop();    // 播放列表滚动到顶部
-    });
+    }, 100);
 }
 
 // 完善获取音乐信息
 // 音乐所在列表ID、音乐对应ID、回调函数
 function ajaxUrl(music, callback)
 {
+    // 旧版缓存清理：localStorage 里「正在播放 / 播放历史」可能存着旧镜像
+    // （api.i-meto.com 的 auth 链接，现已全部 404）或旧的后端 api.php 链接。
+    // 这些链接非空但已失效，若不丢弃会被下面的"已有数据直接回调"放过，导致老歌永远放不出。
+    if(music.url && ("" + music.url).indexOf(METING_API) !== 0) {
+        music.url = null;
+    }
+
     // 已经有数据，直接回调
     if(music.url !== null && music.url !== "err" && music.url !== "") {
         callback(music);
@@ -155,22 +183,16 @@ function ajaxUrl(music, callback)
         return true;
     }
     
-    // 缺 url 时用 Meting search 兜底取「带 auth 的现成代理 URL」。
-    // 两条死路都别走：(a) 直连 type=url → 401/鉴权失败；(b) 后端 types=url →
-    // 线上实测连 Meting 会 30s+ 挂死（Render 出站被限流）。
-    // 搜索/真实歌单已在列表构建时写入 it.url，走到这里的通常是本地歌单 / 旧缓存里缺 url 的曲目。
-    metingResolveBySearch(music, function(hit){
-        if(hit && hit.url) {
-            music.url = hit.url;                                   // 带 auth 代理 URL，浏览器自行跟 302
-            if(!music.pic && hit.pic) music.pic = hit.pic;          // 顺手补封面
-            if(!music.lrc_url && hit.lrc) music.lrc_url = hit.lrc;  // 顺手补歌词链接
-            if(hit.title && !music.name) music.name = hit.title;
-        } else {
-            music.url = "err";
-        }
-        updateMinfo(music); // 更新音乐信息
-        callback(music);    // 回调函数
-    });
+    // qijieya 的 type=url 不需要任何 auth：直接用歌曲 id 拼出音频流地址即可。
+    // 该地址返回 audio/mpeg（206 / 支持 Range），<audio> 可直接播放；
+    // 无效 id 会返回 200 + text/html 空体，<audio> 触发 error → audioErr() 换源或跳下一首。
+    // 所以这里不再需要"按歌名回搜"，也不依赖任何后端。
+    music.url = metingUrl(music.source, "url", music.id);
+    if(!music.url) {
+        music.url = "err";
+    }
+    updateMinfo(music); // 更新音乐信息
+    callback(music);    // 回调函数
     return true;
 }
 
@@ -178,16 +200,21 @@ function ajaxUrl(music, callback)
 // 包含音乐信息的数组、回调函数
 function ajaxPic(music, callback)
 {
+    // 旧版缓存清理：旧镜像的封面链接（含 api.i-meto.com）已失效，丢弃后走回搜补齐
+    if(music.pic && ("" + music.pic).indexOf("api.i-meto.com") > -1) {
+        music.pic = null;
+    }
+
     // 已经有数据，直接回调
     if(music.pic !== null && music.pic !== "err" && music.pic !== "") {
         callback(music);
         return true;
     }
-    // 缺封面时用 search 兜底（直连 type=pic 同样需要 auth，会"鉴权失败"）
+    // 缺封面才回搜：pic 端点用的是「图片 id」，与歌曲 id 不同源，没法直接拼，只能按歌名搜回来
     metingResolveBySearch(music, function(hit){
         if(hit && hit.pic) {
             music.pic = hit.pic;
-            if(!music.url && hit.url) music.url = hit.url;
+            if(music.url === null && hit.url) music.url = hit.url;
             if(!music.lrc_url && hit.lrc) music.lrc_url = hit.lrc;
         } else {
             music.pic = "err";
@@ -325,20 +352,22 @@ function ajaxPlayList(lid, id, callback) {
         for (var i = 0; i < arr.length; i++) {
             var it = arr[i];
             var mid = metingId(it.url);
+            // qijieya 用 name/artist，i-meto 用 title/author —— 两套都兼容
+            var itName   = it.title  || it.name   || "";
+            var itAuthor = it.author || it.artist || "";
             tempList.item.push({
                 id: mid,
-                name: it.title,
-                artist: (it.author || "").split(/[/、,|&]/)[0].trim(),
-                album: it.author || "",
+                name: itName,
+                artist: itAuthor.split(/[/、,|&]/)[0].trim(),
+                album: itAuthor,
                 source: "netease",
                 url_id: mid,
                 pic_id: metingId(it.pic),
-                lyric_id: metingId(it.lrc),
+                lyric_id: mid,
                 pic: it.pic || null,
-                lrc_url: it.lrc || null,   // 现成的带 auth 歌词链接（直连 type=lrc 会"鉴权失败"）
-                // 关键同搜索：Meting 返回的 url 字段是自带 auth 的代理 URL，浏览器可直接跟 302 播放，
-                // 不要再二次请求 type=url（该镜像对不带 auth 的 url 请求返回 401）。
-                url: it.url || null
+                // url / lrc 端点不需要 auth，缺了直接用歌曲 id 拼
+                lrc_url: it.lrc || metingUrl("netease", "lrc", mid),
+                url: it.url || metingUrl("netease", "url", mid)
             });
         }
         musicList[id] = tempList;
@@ -355,55 +384,39 @@ function ajaxPlayList(lid, id, callback) {
 function ajaxLyric(music, callback) {
     lyricTip('歌词加载中...');
 
-    // lrc 可能是歌词文本，也可能是 lrc 文件 URL
-    function useLrcText(lrc) {
-        if(!lrc) { callback(''); return; }
-        if(/^https?:\/\//.test(lrc)) {
-            $.ajax({
-                url: lrc, dataType: "text", timeout: 10000,
-                success: function(t){ callback(t || '', music.lyric_id); },
-                error: function(){ callback('', music.lyric_id); }
-            });
-        } else {
-            callback(lrc, music.lyric_id);
-        }
-    }
+    // qijieya 的 type=lrc 不需要 auth，且直接返回【纯 LRC 文本】(text/plain)。
+    // 用歌曲 id 直接拼地址即可；不再依赖列表里下发的 lrc_url（可能是已失效的旧镜像链接）。
+    var u = metingUrl(music.source || "netease", "lrc", music.lyric_id || music.id);
+    if(!u) { callback(''); return; }
 
-    // 优先用 search/playlist 给的现成带 auth 歌词链接。
-    // 注意：实测该链接直接返回【纯 LRC 文本】(不是 JSON 数组)——不同镜像格式不一致，
-    // 所以两种都兼容；且失败时【不能】再回退 bySearch，否则 fromAuthUrl→bySearch→fromAuthUrl 会死循环。
-    function fromAuthUrl(u) {
-        $.ajax({
-            url: u, dataType: "json", timeout: 10000,
-            success: function(arr){ useLrcText(arr && arr[0] ? arr[0].lrc : ''); },
-            error: function(){
+    $.ajax({
+        url: u, dataType: "text", timeout: 12000,
+        success: function(t){
+            t = t || '';
+            // 兼容某些镜像返回 JSON 数组 [{lrc:"..."}] 的情况
+            if(t.charAt(0) === '[' && t.indexOf('"lrc"') > -1) {
+                try {
+                    var a = JSON.parse(t);
+                    callback((a && a[0] && a[0].lrc) || '', music.lyric_id);
+                    return;
+                } catch(e) {}
+            }
+            callback(t, music.lyric_id);
+        },
+        error: function(){
+            // 备用：拼出的地址拿不到时，退回列表下发的 lrc_url（仅当其是 http 链接且与上面不同）
+            var fb = music.lrc_url;
+            if(fb && /^https?:\/\//.test(fb) && fb !== u) {
                 $.ajax({
-                    url: u, dataType: "text", timeout: 10000,
-                    success: function(t){
-                        t = t || '';
-                        // 实为 JSON 却被当文本拿到：手动解析
-                        if(t.charAt(0) === '[' && t.indexOf('"lrc"') > -1) {
-                            try { var a = JSON.parse(t); useLrcText(a && a[0] ? a[0].lrc : ''); return; } catch(e) {}
-                        }
-                        useLrcText(t);
-                    },
+                    url: fb, dataType: "text", timeout: 12000,
+                    success: function(t2){ callback(t2 || '', music.lyric_id); },
                     error: function(){ callback('', music.lyric_id); }
                 });
+            } else {
+                callback('', music.lyric_id);
             }
-        });
-    }
-
-    // 没有现成链接（本地歌单/旧缓存）：拿歌名回搜一次取带 auth 的 lrc 链接
-    function bySearch() {
-        if(!music.name) { callback(''); return; }
-        metingResolveBySearch(music, function(hit){
-            if(hit && hit.lrc) { music.lrc_url = hit.lrc; fromAuthUrl(hit.lrc); }
-            else { callback('', music.lyric_id); }
-        });
-    }
-
-    if(music.lrc_url) fromAuthUrl(music.lrc_url);
-    else bySearch();
+        }
+    });
 }
 
 

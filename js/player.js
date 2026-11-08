@@ -36,37 +36,31 @@ function audioErr() {
     // 没播放过，直接跳过
     if(rem.playlist === undefined) return true;
 
-    // === P2：播放失败先自动换源重试（netease→tencent），两源都失败才跳下一首 ===
-    // 背景：Render 部署下，仅用 netease 源时部分歌在网易云 CDN 返回 403/资源下架，
-    // 浏览器跟 302 后拿不到音频。同一 id 换 tencent 源往往有资源，可救回。
-    // 注：kugou 在 Meting 镜像层返回的 url 里 id=undefined（已本地验证），救不回，已剔除。
+    // === P3：换源逻辑已废弃，改为「同一首重试一次」 ===
+    // 背景（2026-11-08）：播放源已换成 api.qijieya.cn。该源只有 netease 稳，
+    // tencent 用网易云歌曲 id 会返回 200 + text/html 空体（id 体系不同，救不回来），
+    // 所以旧的 netease→tencent 换源纯属白发一次必败请求，直接去掉。
+    // 保留一次重试：应对临时网络抖动 / url 拼装后偶发取流失败。
     var cur = musicList[1].item[rem.playid];
     console.log('[audioErr] triggered. rem.playid=', rem.playid, 'cur=', cur && {id:cur.id, name:cur.name, source:cur.source, url:(cur.url||'').slice(0,60)});
     if(cur && cur.id) {
-        // 已尝试的源顺序（netease 是默认，先试它之后的）
-        var SOURCES = ["netease", "tencent"];
-        if(!rem._trySrc) rem._trySrc = {};                 // 记录每首歌试到哪个源
+        if(!rem._retry) rem._retry = {};                 // 记录每首歌是否已重试过
         var key = cur.id;
-        if(rem._trySrc[key] === undefined) rem._trySrc[key] = "netease";  // 起始
-        var idx = SOURCES.indexOf(rem._trySrc[key]);
-        var nextSrc = SOURCES[idx + 1];
-        console.log('[audioErr] _trySrc[',key,']=', rem._trySrc[key], 'nextSrc=', nextSrc);
-        if(nextSrc) {
-            rem._trySrc[key] = nextSrc;
-            cur.source = nextSrc;   // 换源
-            cur.url = null;         // 强制重新取 url
-            layer.msg('当前源播放失败，尝试 ' + nextSrc + ' 源');
-            console.log('[audioErr] 换源请求发出: source=' + nextSrc + ' id=' + cur.id);
-            ajaxUrl(cur, play);     // 用新源重新取并播放
+        if(!rem._retry[key]) {
+            rem._retry[key] = 1;
+            cur.url = null;                              // 清空，让 ajaxUrl 重新拼地址
+            layer.msg('播放失败，正在重试...');
+            console.log('[audioErr] 重试一次: id=' + cur.id);
+            ajaxUrl(cur, play);
             return true;
         }
-        // 两源都试完，清理标记
-        delete rem._trySrc[key];
-        console.log('[audioErr] 两源都试完, 走 nextMusic()');
+        // 已重试过仍失败：清理标记，走跳歌
+        delete rem._retry[key];
+        console.log('[audioErr] 重试仍失败, 走 nextMusic()');
     } else {
         console.warn('[audioErr] 拿不到当前歌, cur=', cur);
     }
-    // === 换源逻辑结束，以下为原逻辑：连续失败过多才停 ===
+    // === 重试逻辑结束，以下为原逻辑：连续失败过多才停 ===
 
     if(rem.errCount > 10) { // 连续播放失败的歌曲过多
         layer.msg('似乎出了点问题~播放已停止');
